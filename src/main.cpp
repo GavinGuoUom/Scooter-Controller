@@ -1,10 +1,13 @@
 #include "Arduino.h"
-#include "PID_v1.h"
+#include <PID_v1.h>
 #include "time.h"
 
 #ifndef DEBUG
 #define DEBUG
 #endif
+
+//#define NORELAY
+#define NCRELAY
 
 // define port numer of each pin to mannually control the registor
 #define UH 0
@@ -30,8 +33,8 @@
 
 // define input pin
 // from switch
-#define DRIVE_SW_PIN 2 // INT0
-#define BRAKE_SW_PIN 3 // INT1
+#define DRIVE_SW_PIN 3 // INT1
+#define BRAKE_SW_PIN 2 // INT0
 #define DRIVE_LED 4
 // from hall sensor
 #define HALL_U_PIN 14 // PC0
@@ -46,12 +49,13 @@ bool drive_flag;
 bool brake_flag;
 uint8_t hall_sen;
 uint8_t switch_patt;
-uint8_t vol_in;
-uint8_t curr_in;
+int vol_in;
+int curr_in;
 double bat_vol;
 double bat_curr;
 double target_curr;
 double target_voltage;
+double PIDtarget;
 double PIDinput;
 double PIDoutput;
 int hall_c=0;
@@ -59,7 +63,7 @@ int hall_c=0;
 unsigned long time_0=0;
 unsigned long time_1=0;
 
-PID myPID(&PIDinput, &PIDoutput, &target_voltage, 0.02, 0.01, 0.01, DIRECT);
+PID myPID(&PIDinput, &PIDoutput, &PIDtarget, 0.02, 0.01, 0.01, DIRECT);
 
 void drive_sw_interrupt();
 void brake_sw_interrupt();
@@ -70,6 +74,7 @@ void switch_pattn3();
 
 void setup() {
   // setup pin mode
+  
   pinMode(PWM_H_PIN, OUTPUT);
   pinMode(PWM_L_PIN, OUTPUT);
   pinMode(CAP_SW, OUTPUT);
@@ -87,8 +92,8 @@ void setup() {
   // from control swtiches
   pinMode(DRIVE_SW_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(DRIVE_SW_PIN), drive_sw_interrupt, CHANGE);
-  // pinMode(BRAKE_SW_PIN, INPUT);
-  // attachInterrupt(digitalPinToInterrupt(BRAKE_SW_PIN), brake_sw_interrupt, CHANGE);
+  pinMode(BRAKE_SW_PIN, INPUT);
+  attachInterrupt(digitalPinToInterrupt(BRAKE_SW_PIN), brake_sw_interrupt, CHANGE);
   pinMode(DRIVE_LED, OUTPUT); //
   // from sensor
   pinMode(BAT_VO_PIN, INPUT);
@@ -105,29 +110,54 @@ void setup() {
   // Set up PID
   PIDinput = 0;
   PIDoutput = 0;
-  target_voltage = 42;
+  target_voltage = 42.0;
+  PIDtarget = target_voltage/50*256;
   target_curr = -1;
   myPID.SetMode(AUTOMATIC);
-
   switch_pattn();
   
 }
 
 void loop() {
   //drive_flag = true;
-  brake_flag = false;
+  //brake_flag = false;
   vol_in = analogRead(BAT_VO_PIN);
-  // hall_sen = PINC & 0b000111;
-  switch_pattn();
+  PIDinput = vol_in*5/1024*10/50*256;
+  // switch_pattn();
   if(drive_flag)
   {
     analogWrite(PWM_H_PIN, 255);
     analogWrite(PWM_L_PIN, 255);
+      #ifdef NCRELAY
+      digitalWrite(CAP_SW, HIGH);
+      #else
+      #ifdef NORELAY
+      digitalWrite(CAP_SW, LOW);
+      #endif
+      #endif
+    switch_pattn();
+  }
+  else if(brake_flag){
+    analogWrite(PWM_H_PIN, 0);
+    myPID.Compute();
+    analogWrite(PWM_L_PIN, (int)PIDoutput);
+    #ifdef DEBUG
+    Serial.print("PWM output is:");
+    Serial.println(PIDoutput);
+    Serial.print("\n");
+    #endif
+    switch_pattn2();
+  }
+  else
+  {
+    analogWrite(PWM_H_PIN, 0);
+    analogWrite(PWM_L_PIN, 0);
   }
 }
 
 void drive_sw_interrupt()
 {
+  /*
   time_1 = millis();
   if (time_1 - time_0>=10)
   {
@@ -141,11 +171,46 @@ void drive_sw_interrupt()
     #endif
     digitalWrite(DRIVE_LED, drive_flag);
   }
-  
+  */
+    drive_flag = digitalRead(DRIVE_SW_PIN);
+    #ifdef DEBUG
+    Serial.print("Detected drive switch:");
+    Serial.println(drive_flag);
+    //Serial.print("\t Time:");
+    //Serial.println(time_0);
+    Serial.print("\n");
+    #endif
+    digitalWrite(DRIVE_LED, drive_flag);
+    if (drive_flag)
+    {
+      //switch_pattn();
+      analogWrite(PWM_L_PIN, 255);
+      analogWrite(PWM_H_PIN, 255);
+      #ifdef NCRELAY
+      digitalWrite(CAP_SW, HIGH);
+      #else
+      #ifdef NORELAY
+      digitalWrite(CAP_SW, LOW);
+      #endif
+      #endif
+    }
+    else
+    {
+      analogWrite(PWM_H_PIN, 0);
+      analogWrite(PWM_L_PIN, 0);
+      #ifdef NCRELAY
+      digitalWrite(CAP_SW,LOW);
+      #else
+      #ifdef NORELAY
+      digitalWrite(CAP_SW, HIGH);
+      #endif
+      #endif
+    }
 }
 
 void brake_sw_interrupt()
 {
+  /*
   time_1 = millis();
   if (time_1-time_0>=10)
   {
@@ -159,6 +224,26 @@ void brake_sw_interrupt()
     Serial.print("\n");
     #endif
   }
+  */
+  brake_flag=digitalRead(BRAKE_SW_PIN);
+  #ifdef DEBUG
+  Serial.print("Detected drive switch:");
+  Serial.println(brake_flag);
+  //Serial.print((brake_flag?"On","Off"));
+  //Serial.print("\t Time:");
+  //Serial.println(time_0);
+  Serial.print("\n");
+  #endif
+  digitalWrite(DRIVE_LED, brake_flag);
+  if (brake_flag)
+  {
+    //switch_pattn2();
+  }
+  else{
+    //PORTB=0;
+  }
+
+
 }
 
 ISR(PCINT1_vect)
@@ -210,6 +295,36 @@ void switch_pattn()
 
 void switch_pattn2()
 {
+    //hall_sen = ~(PINC & 0b00000111) & 0b00000111; // W||V||U
+    switch (hall_sen)
+    {
+      case 0b001: //0b001
+        switch_patt = (1<<WL);
+        break;
+      case 0b011: //0b011
+        switch_patt = (1<<UL);
+        break;
+      case 0b010: //0b010
+        switch_patt = (1<<UL);
+        break;
+      case 0b110: //0b110
+        switch_patt = (1<<VL);
+        break;
+      case 0b100: //0b100
+        switch_patt = (1<<VL);
+        break;
+      case 0b101: //0b101
+        switch_patt = (1<<WL);
+        break;
+      default:
+        switch_patt = 0;
+        break;
+    }
+    PORTB = switch_patt;
+}
+
+/*
+{
     hall_sen = ~(PINC & 0b00000111) & 0b00000111; // W||V||U
     switch (hall_sen)
     {
@@ -237,6 +352,7 @@ void switch_pattn2()
     }
     PORTB = switch_patt;
 }
+*/
 
 void switch_pattn3()
 {
